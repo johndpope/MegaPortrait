@@ -167,7 +167,7 @@ def train(args, models, device, driver_loader, source_loader, optimizers, schedu
     trans_mat_driver_rand = HeadPoseEstimation.head_pose_estimation(driver_img_random)
     z_d_rand = Emtn_facial(driver_img_random)
     
-    descriptor_driver = [e_s, trans_mat_driver, z_d]
+    descriptor_driver = [e_s, W_rt_d, z_d]
     descriptor_source_rand = [e_s_rand, trans_mat_source_rand, z_s_rand]
     descriptor_driver_rand = [e_s_rand, trans_mat_driver_rand, z_d_rand]
     
