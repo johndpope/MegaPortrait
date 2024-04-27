@@ -17,9 +17,8 @@ from torchvision import transforms
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-
 source_img_path = './source_img'
-driver_img_path = './driver_img'
+driver_img_path = './driver_img' 
 data_set_length = 42
 img_size = 512
 
@@ -30,185 +29,215 @@ cosine_dist = nn.CosineSimilarity()
 
 patch = (1, img_size // 2 ** 4, img_size // 2 ** 4)
 
-
 def cosine_distance(args, z1, z2):
+  
+  res = args.s_cos * (torch.sum(cosine_dist(z1[0], z2[0])) - args.m_cos)
+  res += args.s_cos * (torch.sum(cosine_dist(z1[1], z2[1])) - args.m_cos)   
+  res += args.s_cos * (torch.sum(cosine_dist(z1[2], z2[2])) - args.m_cos)
+  
+  return res
 
-    res = args.s_cos * (torch.sum(cosine_dist(z1[0], z2[0])) - args.m_cos)
-    res += args.s_cos * (torch.sum(cosine_dist(z1[1], z2[1])) - args.m_cos)
-    res += args.s_cos * (torch.sum(cosine_dist(z1[2], z2[2])) - args.m_cos)
-
-    return res
-
-
-def cosine_loss( args, descriptor_driver,
+def cosine_loss(args, descriptor_driver, 
                 descriptor_source_rand, descriptor_driver_rand):
+  
+  z_dri = descriptor_driver
+  z_dri_rand = descriptor_driver_rand
+  
+  # Create descriptors to form the pairs
+  # z_s*->d
+  z_src_rand_dri = [descriptor_source_rand[0], 
+                    z_dri[1], 
+                    z_dri[2]]
 
-    z_dri = descriptor_driver
-    z_dri_rand = descriptor_driver_rand
+  # Form the pairs
+  pos_pairs = [(z_dri, z_dri), (z_src_rand_dri, z_dri)]
+  neg_pairs = [(z_dri, z_dri_rand), (z_src_rand_dri, z_dri_rand)]
 
-    # Create descriptors to form the pairs
-    # z_s*->d
-    z_src_rand_dri = [descriptor_source_rand[0],
-                      z_dri[1],
-                      z_dri[2]]
-
-    # Form the pairs
-    pos_pairs = [(z_dri, z_dri), (z_src_rand_dri, z_dri)]
-    neg_pairs = [(z_dri, z_dri_rand), (z_src_rand_dri, z_dri_rand)]
-
-    # Calculate cos loss
-    sum_neg_paris = torch.exp(cosine_distance(args, neg_pairs[0][0], neg_pairs[0][1])) + torch.exp(cosine_distance(args, neg_pairs[1][0], neg_pairs[1][1]))
-
-    L_cos = torch.zeros(dtype=torch.float)
-    for i in range(len(pos_pairs)):
-        L_cos += torch.log(torch.exp(cosine_distance(args, pos_pairs[0][0], pos_pairs[0][1])) / (torch.exp(cosine_distance(args, pos_pairs[0][0], pos_pairs[0][1])) + sum_neg_paris))
-
-    return L_cos
-
+  # Calculate cos loss
+  sum_neg_paris = torch.exp(cosine_distance(args, neg_pairs[0][0], neg_pairs[0][1])) + torch.exp(cosine_distance(args, neg_pairs[1][0], neg_pairs[1][1]))
+  
+  L_cos = torch.zeros(dtype=torch.float)
+  for i in range(len(pos_pairs)):
+    L_cos += torch.log(torch.exp(cosine_distance(args, pos_pairs[0][0], pos_pairs[0][1])) / (torch.exp(cosine_distance(args, pos_pairs[0][0], pos_pairs[0][1])) + sum_neg_paris))
+  
+  return L_cos
+      
 
 def train(args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random,
           source_loader_origin, driver_loader_origin):
 
-    # Instantiate each model.
-    Eapp1 = models['Eapp1']
-    Eapp2 = models['Eapp2']
-    Emtn_facial = models['Emtn_facial']
-    Warp_G = models['Warp_G']
-    G3d = models['G3d']
-    G2d = models['G2d']
-    vgg_IN = models['Vgg_IN']
-    vgg_face = models['Vgg_face']
-    discriminator = models['patchGAN']
+  # Instantiate each model.
+  Eapp1 = models['Eapp1'] 
+  Eapp2 = models['Eapp2']
+  Emtn_facial = models['Emtn_facial']
+  Warp_G = models['Warp_G']
+  G3d = models['G3d']
+  G2d = models['G2d']
+  vgg_IN = models['Vgg_IN']
+  vgg_face = models['Vgg_face']
+  discriminator = models['patchGAN']
+         
+  train_loss = 0.0
 
-    train_loss = 0.0
+  # Training procedure starts here.
+  for idx in range(args.iteration):
+    # Ending condition for training.
+    if idx > args.iteration:
+      print(" Training complete!")
 
-    # Training procedure starts here.
+      break
+    else:
+      idx += 1
+
+    # loading a single data
+    source_img = next(iter(source_loader)).to(device)
+    driver_img = next(iter(driver_loader)).to(device)
+    source_imgs_origin = next(iter(source_loader_origin))
+    driver_imgs_origin = next(iter(driver_loader_origin))
+
+    # pass the data through Eapp1 & 2.
+    v_s = Eapp1(source_img) 
+    e_s = Eapp2(source_img)
+
+    # Emtn.
+
+    # Second part of Emtn : Generate facial expression latent vector z
+    # based on a ResNet-18 network
+    z_s = Emtn_facial(source_img)
+    z_d = Emtn_facial(driver_img)
+    
+    # Warp_Generator
+    
+    # First part of Warp Generator: Generate warping matrix  
+    # based on its transformation matrix.
+    # Note: the head pose prediction is also completed in this function.
+    W_rt_s = HeadPoseEstimation.head_pose_estimation(source_imgs_origin)
+    W_rt_d = HeadPoseEstimation.head_pose_estimation(driver_imgs_origin)
+    
+    # Second part of Warp Generator: Generate emotion warper.
+    W_em_s = Warp_G(z_s + e_s)
+    W_em_d = Warp_G(z_d + e_s)
+    
+    # 3D warping of w_s and v_s
+    # First, 3D warping using w_rt_s
+    warp_3d_vs = cv.warpPerspective(v_s, W_rt_s, (v_s.shape[1], v_s.shape[0]))
+    # Next, 3D warping using w_em_s
+    warp_3d_vs = cv.warpPerspective(warp_3d_vs, W_em_s, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
+    
+    # Pass data into G3d
+    output = G3d(warp_3d_vs)
+    
+    # 3D warping with w_d
+    vs_d = cv.warpPerspective(warp_3d_vs, W_rt_d, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
+    vs_d = cv.warpPerspective(vs_d, W_em_d, (vs_d.shape[1], vs_d.shape[0]))
+
+    # Pass into G2d.
+    output = G2d(vs_d)
+  
+    # IN loss
+    L_IN = L1_loss(vgg_IN(output), vgg_IN(driver_img))
+    
+    # face loss
+    L_face = L1_loss(vgg_face(output), vgg_face(driver_img))
+    
+    # adv loss
+    # Adversarial ground truths
+    valid = Variable(torch.Tensor(np.ones((driver_img.size(0), *patch))), requires_grad=False)
+    fake = Variable(torch.Tensor(-1*np.ones((driver_img.size(0), *patch))), requires_grad=False)
+        
+    # real loss
+    pred_real = discriminator(driver_img, source_img)
+    loss_real = hinge_loss(pred_real, valid)
+
+    # fake loss        
+    pred_fake = discriminator(output.detach(), source_img)
+    loss_fake = hinge_loss(pred_fake, fake)
+        
+    L_adv = 0.5 * (loss_real + loss_fake)
+    
+    # feature mapping loss
+    L_feature_matching = feature_matching_loss(output, driver_img)
+    
+    # Cycle consistency loss 
+    # Feed base model with randomly sampled image.
+    e_s_rand = Eapp2(source_img_random)
+    trans_mat_source_rand = HeadPoseEstimation.head_pose_estimation(source_img_random)
+    z_s_rand = Emtn_facial(source_img_random)
+
+    trans_mat_driver_rand = HeadPoseEstimation.head_pose_estimation(driver_img_random)
+    z_d_rand = Emtn_facial(driver_img_random)
+    
+    descriptor_driver = [e_s, trans_mat_driver, z_d]
+    descriptor_source_rand = [e_s_rand, trans_mat_source_rand, z_s_rand]
+    descriptor_driver_rand = [e_s_rand, trans_mat_driver_rand, z_d_rand]
+    
+    L_cos = cosine_loss(args,descriptor_driver, 
+                            descriptor_source_rand, descriptor_driver_rand)
+    
+    L_per = args.weight_IN * L_IN + args.weight_face * L_face
+        
+    L_gan = args.weight_adv * L_adv + args.weight_FM * L_feature_matching
+        
+    L_final = L_per + L_gan + args.weight_cos * L_cos
+        
+    # Optimizer and Learning rate scheduler.
+    # optimizer
+    for i in range(len(optimizers)):
+      optimizers[i].zero_grad()
+        
+    L_final.backward()
+        
+    for i in range(len(optimizers)):  
+      optimizers[i].step()
+      schedulers[i].step()
+        
+    train_loss += L_final
+    train_loss /= idx
+    
+    # Print log 
+    print('Iteration: {} / {} : train loss is: {}'.format(idx, args.iteration, train_loss))
+
+def distill(args, teacher, student, device, driver_loader):
+
+    # Set teacher model to eval mode
+    teacher.eval()
+
+    # Training loop for student
     for idx in range(args.iteration):
-        # Ending condition for training.
-        if idx > args.iteration:
-            print(" Training complete!")
 
-            break
-        else:
-            idx += 1
-
-        # loading a single data
-        source_img = next(iter(source_loader)).to(device)
+        # Sample driver frame and index
         driver_img = next(iter(driver_loader)).to(device)
-        source_imgs_origin = next(iter(source_loader_origin))
-        driver_imgs_origin = next(iter(driver_loader_origin))
+        idx = random.randint(0, args.num_avatars-1)
 
-        # pass the data through Eapp1 & 2.
-        v_s = Eapp1(source_img)
-        e_s = Eapp2(source_img)
+        # Generate pseudo-ground truth with teacher
+        with torch.no_grad():
+            output_HR = teacher(driver_img, idx) 
 
-        # Emtn.
+        # Get student prediction
+        output_DT = student(driver_img, idx)
 
-        # Second part of Emtn : Generate facial expression latent vector z
-        # based on a ResNet-18 network
-        z_s = Emtn_facial(source_img)
-        z_d = Emtn_facial(driver_img)
+        # Calculate losses
+        L_per = perceptual_loss(output_DT, output_HR) 
+        L_adv = adversarial_loss(output_DT, output_HR)
 
-        # Warp_Generator
+        L_final = L_per + L_adv
 
-        # First part of Warp Generator: Generate warping matrix
-        # based on its transformation matrix.
-        # Note: the head pose prediction is also completed in this function.
-        W_rt_s = HeadPoseEstimation.head_pose_estimation(source_imgs_origin)
-        W_rt_d = HeadPoseEstimation.head_pose_estimation(driver_imgs_origin)
-
-        # Second part of Warp Generator: Generate emotion warper.
-        W_em_s = Warp_G(z_s + e_s)
-        W_em_d = Warp_G(z_d + e_s)
-
-        # 3D warping of w_s and v_s
-        # First, 3D warping using w_rt_s
-        warp_3d_vs = cv.warpPerspective(v_s, W_rt_s, (v_s.shape[1], v_s.shape[0]))
-        # Next, 3D warping using w_em_s
-        warp_3d_vs = cv.warpPerspective(warp_3d_vs, W_em_s, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
-
-        # Pass data into G3d
-        output = G3d(warp_3d_vs)
-
-        # 3D warping with w_d
-        vs_d = cv.warpPerspective(warp_3d_vs, W_rt_d, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
-        vs_d = cv.warpPerspective(vs_d, W_em_d, (vs_d.shape[1], vs_d.shape[0]))
-
-        # Pass into G2d.
-        output = G2d(vs_d)
-
-        # IN loss
-        L_IN = L1_loss(vgg_IN(output), vgg_IN(driver_img))
-
-        # face loss
-        L_face = L1_loss(vgg_face(output), vgg_face(driver_img))
-
-        # adv loss
-        # Adversarial ground truths
-        valid = Variable(torch.Tensor(np.ones((driver_img.size(0), *patch))), requires_grad=False)
-        fake = Variable(torch.Tensor(-1 * np.ones((driver_img.size(0), *patch))), requires_grad=False)
-
-        # real loss
-        pred_real = discriminator(driver_img, source_img)
-        loss_real = hinge_loss(pred_real, valid)
-
-        # fake loss
-        pred_fake = discriminator(output.detach(), source_img)
-        loss_fake = hinge_loss(pred_fake, fake)
-
-        L_adv = 0.5 * (loss_real + loss_fake)
-
-        # feature mapping loss
-        L_feature_matching = feature_matching_loss(output, driver_img)
-
-        # Cycle consistency loss
-        # Feed base model with randomly sampled image.
-        e_s_rand = Eapp2(source_img_random)
-        trans_mat_source_rand = HeadPoseEstimation.head_pose_estimation(source_img_random)
-        z_s_rand = Emtn_facial(source_img_random)
-
-        trans_mat_driver_rand = HeadPoseEstimation.head_pose_estimation(driver_img_random)
-        z_d_rand = Emtn_facial(driver_img_random)
-
-        descriptor_driver = [e_s, trans_mat_driver, z_d]
-        descriptor_source_rand = [e_s_rand, trans_mat_source_rand, z_s_rand]
-        descriptor_driver_rand = [e_s_rand, trans_mat_driver_rand, z_d_rand]
-
-        L_cos = cosine_loss(args, descriptor_driver,
-                           descriptor_source_rand, descriptor_driver_rand)
-
-        L_per = args.weight_IN * L_IN + args.weight_face * L_face
-
-        L_gan = args.weight_adv * L_adv + args.weight_FM * L_feature_matching
-
-        L_final = L_per + L_gan + args.weight_cos * L_cos
-
-        # Optimizer and Learning rate scheduler.
-        # optimizer
-        for i in range(len(optimizers)):
-            optimizers[i].zero_grad()
-
+        # Optimize student
+        student_optimizer.zero_grad()
         L_final.backward()
-
-        for i in range(len(optimizers)):
-            optimizers[i].step()
-            schedulers[i].step()
-
-        train_loss += L_final
-        train_loss /= idx
+        student_optimizer.step()
 
         # Print log
-        print('Iteration: {} / {} : train loss is: {}'.format(idx, args.iteration, train_loss))
-
-
-
-
+        if idx % args.print_freq == 0:
+            print('Iteration: {} / {} : distillation loss is: {}'.format(idx, args.iteration, L_final.item()))
+            
+            
 def main():
     parser = argparse.ArgumentParser(description="Megaportrait Pytorch implementation.")
     parser.add_argument('--batch-size', type=int, default=16, metavar='N',
                         help='input batch size for training. default=16')
     parser.add_argument('--iteration', type=int, default=20000, metavar='N',
-                        help='input batch size for training. default=20000')
+                        help='input batch size for training. default=20000')  
     parser.add_argument('--epochs', type=int, default=50, metavar='N',
                         help='number of epochs to train. default = 50')
     parser.add_argument('--weight-IN', type=int, default=20, metavar='N',
@@ -225,14 +254,18 @@ def main():
                         help='s parameter in cos loss. default = 5')
     parser.add_argument('--m-cos', type=float, default=0.2, metavar='N',
                         help='m parameter in cos loss. default = 0.2')
-    parser.add_argument('--lr', type=float, default=2e-4, metavar='LR',
+    parser.add_argument('--lr', type = float, default=2e-4, metavar='LR',
                         help='learning rate')
+    parser.add_argument('--num-avatars', type=int, default=100, metavar='N',
+                        help='number of avatars for distillation')
+    parser.add_argument('--print-freq', type=int, default=100, metavar='N',
+                        help='print frequency for distillation')               
     args = parser.parse_args()
 
     use_cuda = torch.cuda.is_available()
 
     device = torch.device("cuda" if use_cuda else "cpu")
-
+  
     # Transformation on source images.
     transform_source = transforms.Compose([
         transforms.ToTensor(),
