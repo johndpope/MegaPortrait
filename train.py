@@ -366,8 +366,9 @@ def main():
         scheduler = CosineAnnealingLR(optimizers[0], T_max=args.iteration, eta_min=1e-6)
         schedulers.append(scheduler)
 
-    train(args, args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random,driver_loader_origin)
+    train(args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random,source_loader_origin, driver_loader_origin)
 
+    
 
 # Start Training.
 main()
