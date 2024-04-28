@@ -63,8 +63,7 @@ def cosine_loss(args, descriptor_driver,
   return L_cos
       
 
-def train(args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random,
-          source_loader_origin, driver_loader_origin):
+def train(args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random,source_loader_origin, driver_loader_origin):
 
   # Instantiate each model.
   Eapp1 = models['Eapp1'] 
@@ -125,15 +124,24 @@ def train(args, models, device, driver_loader, source_loader, optimizers, schedu
     warp_3d_vs = cv.warpPerspective(warp_3d_vs, W_em_s, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
     
     # Pass data into G3d
-    output = G3d(warp_3d_vs)
+    # output = G3d(warp_3d_vs)
     
-    # 3D warping with w_d
-    vs_d = cv.warpPerspective(warp_3d_vs, W_rt_d, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
-    vs_d = cv.warpPerspective(vs_d, W_em_d, (vs_d.shape[1], vs_d.shape[0]))
+    # # 3D warping with w_d
+    # vs_d = cv.warpPerspective(warp_3d_vs, W_rt_d, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
+    # vs_d = cv.warpPerspective(vs_d, W_em_d, (vs_d.shape[1], vs_d.shape[0]))
 
-    # Pass into G2d.
-    output = G2d(vs_d)
+    # # Pass into G2d.
+    # output = G2d(vs_d)
   
+  # In the train function:
+    # Pass data into G3d
+    output_3d = G3d(warp_3d_vs)
+
+    # Orthographically project the 3D features into 2D
+    output_3d = output_3d.squeeze(2)
+
+    # Pass the projected features into G2d
+    output = G2d(output_3d)
     # IN loss
     L_IN = L1_loss(vgg_IN(output), vgg_IN(driver_img))
     
@@ -305,7 +313,9 @@ def main():
 
     # Generate random pairs for calculating cos loss.
     random.seed(0)
-    [index_source, index_driver] = random.sample(range(0, 29999), 2)
+    # [index_source, index_driver] = random.sample(range(0, 29999), 2)
+    index_source = 0
+    index_driver = 1
     source_img_random = Image.open("./CelebA-HQ-img/" + str(index_source) + ".jpg")
     driver_img_random = Image.open("./CelebA-HQ-img/" + str(index_driver) + ".jpg")
     # Apply the same transformation on these two images.
@@ -313,12 +323,15 @@ def main():
     driver_img_random = transform_driver(driver_img_random)
 
     Eapp1 = model.Eapp1().to(device)
-    Eapp2 = model.Eapp2().to(device)
-    Emtn_facial = model.Emtn_facial().to(device)
-    Emtn_head = model.Emtn_head().to(device)
-    Warp_G = model.WarpGenerator().to(device)
-    G3d = model.G3d().to(device)
-    G2d = model.G2d().to(device)
+    # Eapp2 = model.Eapp2().to(device)
+    Eapp2 = model.Eapp2(repeat=[3, 4, 6, 3])
+    # Emtn_facial = model.Emtn_facial().to(device)
+
+    Emtn_facial = model.Emtn_facial(in_channels=3).to(device)
+    Emtn_head = model.Emtn_head(in_channels=3, resblock=model.ResBlock).to(device)
+    Warp_G = model.WarpGenerator(input_channels=1).to(device)
+    G3d = model.G3d(input_channels=96).to(device)
+    G2d = model.G2d(input_channels=32).to(device)
     Vgg_IN = torch.hub.load('pytorch/vision:v0.10.0', 'vgg19', pretrained=True)
     Vgg_face = vgg_face.VggFace().to(device)
     discriminator = patchGAN.Discriminator().to(device)
@@ -337,14 +350,14 @@ def main():
     }
 
     optimizers = [
-        optim.Adam(models['Eapp1'], lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
-        optim.Adam(models['Eapp2'], lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
-        optim.Adam(models['Emtn_facial'], lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
-        optim.Adam(models['Emtn_head'], lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
-        optim.Adam(models['Warp_G'], lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
-        optim.Adam(models['G3d'], lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
-        optim.Adam(models['G2d'], lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
-        optim.Adam(models['patchGAN'], lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2)
+        optim.Adam(models['Eapp1'].parameters(), lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
+        optim.Adam(models['Eapp2'].parameters(), lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
+        optim.Adam(models['Emtn_facial'].parameters(), lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
+        optim.Adam(models['Emtn_head'].parameters(), lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
+        optim.Adam(models['Warp_G'].parameters(), lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
+        optim.Adam(models['G3d'].parameters(), lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
+        optim.Adam(models['G2d'].parameters(), lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2),
+        optim.Adam(models['patchGAN'].parameters(), lr=args.lr, betas=(0.5, 0.999), eps=1e-8, weight_decay=1e-2)
     ]
 
     schedulers = []
@@ -353,7 +366,7 @@ def main():
         scheduler = CosineAnnealingLR(optimizers[0], T_max=args.iteration, eta_min=1e-6)
         schedulers.append(scheduler)
 
-    train(args, args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random)
+    train(args, args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random,driver_loader_origin)
 
 
 # Start Training.

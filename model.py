@@ -393,6 +393,16 @@ class G3d(nn.Module):
     def __init__(self, input_channels):
         super(G3d, self).__init__()
         self.input_channels = input_channels
+        self.resblock1 = ResBlock_Custom(dimension=3, input_channels=input_channels, output_channels=192)
+        self.resblock2 = ResBlock_Custom(dimension=3, input_channels=192, output_channels=196)
+        self.resblock3 = ResBlock_Custom(dimension=3, input_channels=192, output_channels=384)
+        self.resblock4 = ResBlock_Custom(dimension=3, input_channels=384, output_channels=384)
+        self.resblock5 = ResBlock_Custom(dimension=3, input_channels=384, output_channels=512)
+        self.resblock6 = ResBlock_Custom(dimension=3, input_channels=512, output_channels=512)
+        self.resblock7 = ResBlock_Custom(dimension=3, input_channels=512, output_channels=384)
+        self.resblock8 = ResBlock_Custom(dimension=3, input_channels=384, output_channels=196)
+        self.resblock9 = ResBlock_Custom(dimension=3, input_channels=196, output_channels=96)
+        self.conv_last = nn.Conv3d(in_channels=96, out_channels=96, kernel_size=3, padding=1, stride=1)
 
     def forward(self, x):
         out = ResBlock_Custom(dimension=3, input_channels=self.input_channels, output_channels=192)(x)
@@ -425,38 +435,25 @@ class G3d(nn.Module):
 
 class G2d(nn.Module):
     def __init__(self, input_channels):
-        super(G3d, self).__init__()
-        self.input_channels = input_channels
-        self.conv1 = nn.Conv2d(in_channels=self.input_channels, out_channels=512, kernel_size=1, padding=0, stride=1)
-        self.repeat_resblock = nn.Sequential(
-            ResBlock_Custom(dimension=2, input_channels=512, output_channels=512)
-        )
-
-        for i in range(1, 8):
-            self.repeat_resblock.add_module(module=ResBlock_Custom(dimension=2, input_channels=512, output_channels=512))
-
-        self.upsamples = nn.Sequential(
+        super(G2d, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=input_channels, out_channels=64, kernel_size=3, padding=1, stride=1)
+        
+        self.hidden_layer = nn.Sequential(
+            ResBlock_Custom(dimension=2, input_channels=64, output_channels=128),
             nn.Upsample(scale_factor=(2, 2)),
-            ResBlock_Custom(dimension=2, input_channels=512, output_channels=256),
+            ResBlock_Custom(dimension=2, input_channels=128, output_channels=256),
             nn.Upsample(scale_factor=(2, 2)),
-            ResBlock_Custom(dimension=2, input_channels=256, output_channels=128),
-            nn.Upsample(scale_factor=(2, 2)),
-            ResBlock_Custom(dimension=2, input_channels=128, output_channels=64),
+            ResBlock_Custom(dimension=2, input_channels=256, output_channels=512),
+            nn.Upsample(scale_factor=(2, 2))
         )
-
-        self.last_layer = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=3, kernel_size=3, padding=1, stride=1)
-        )
+        
+        self.last_layer = nn.Conv2d(in_channels=512, out_channels=3, kernel_size=3, padding=1, stride=1)
 
     def forward(self, x):
-        ##TODO: Placeholder for reshaping.
         out = self.conv1(x)
-        out = self.repeat_resblock(out)
-        out = self.upsamples(out)
+        out = self.hidden_layer(out)
         out = F.group_norm(out, num_groups=32)
         out = F.relu(out)
         out = self.last_layer(out)
-        out = F.sigmoid(out)
-
+        out = torch.tanh(out)
         return out
-
