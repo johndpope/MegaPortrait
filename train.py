@@ -16,9 +16,9 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from EMODataset import EMODataset
+import torch.nn.functional as F
 
-source_img_path = './source_img'
-driver_img_path = './driver_img' 
 data_set_length = 42
 img_size = 512
 
@@ -62,6 +62,15 @@ def cosine_loss(args, descriptor_driver,
   
   return L_cos
       
+def warp_3d(x, theta):
+  # Generate 3D grid
+  grid = F.affine_grid(theta, x.size())
+  
+  # Sample the input tensor using the grid
+  warped_x = F.grid_sample(x, grid)
+  
+  return warped_x
+
 
 def train(args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random,source_loader_origin, driver_loader_origin):
 
@@ -80,19 +89,7 @@ def train(args, models, device, driver_loader, source_loader, optimizers, schedu
 
   # Training procedure starts here.
   for idx in range(args.iteration):
-    # Ending condition for training.
-    if idx > args.iteration:
-      print(" Training complete!")
 
-      break
-    else:
-      idx += 1
-
-    # loading a single data
-    source_img = next(iter(source_loader)).to(device)
-    driver_img = next(iter(driver_loader)).to(device)
-    source_imgs_origin = next(iter(source_loader_origin))
-    driver_imgs_origin = next(iter(driver_loader_origin))
 
     # pass the data through Eapp1 & 2.
     v_s = Eapp1(source_img) 
@@ -116,23 +113,17 @@ def train(args, models, device, driver_loader, source_loader, optimizers, schedu
     # Second part of Warp Generator: Generate emotion warper.
     W_em_s = Warp_G(z_s + e_s)
     W_em_d = Warp_G(z_d + e_s)
-    
-    # 3D warping of w_s and v_s
-    # First, 3D warping using w_rt_s
-    warp_3d_vs = cv.warpPerspective(v_s, W_rt_s, (v_s.shape[1], v_s.shape[0]))
-    # Next, 3D warping using w_em_s
-    warp_3d_vs = cv.warpPerspective(warp_3d_vs, W_em_s, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
-    
+  
+
+    # Replace cv.warpPerspective with warp_3d function
+    warp_3d_vs = warp_3d(v_s, W_rt_s)
+    warp_3d_vs = warp_3d(warp_3d_vs, W_em_s)
+
+    vs_d = warp_3d(warp_3d_vs, W_rt_d)
+    vs_d = warp_3d(vs_d, W_em_d)
     # Pass data into G3d
     # output = G3d(warp_3d_vs)
     
-    # # 3D warping with w_d
-    # vs_d = cv.warpPerspective(warp_3d_vs, W_rt_d, (warp_3d_vs.shape[1], warp_3d_vs.shape[0]))
-    # vs_d = cv.warpPerspective(vs_d, W_em_d, (vs_d.shape[1], vs_d.shape[0]))
-
-    # # Pass into G2d.
-    # output = G2d(vs_d)
-  
   # In the train function:
     # Pass data into G3d
     output_3d = G3d(warp_3d_vs)
@@ -274,53 +265,45 @@ def main():
 
     device = torch.device("cuda" if use_cuda else "cpu")
   
-    # Transformation on source images.
-    transform_source = transforms.Compose([
+
+
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+  
+    # Transformation on images.
+    transform = transforms.Compose([
         transforms.ToTensor(),
-        # Normalize data into range(-1, 1)
         transforms.Normalize([0.5], [0.5]),
-        # Randomly flip train data(left and right).
         transforms.RandomHorizontalFlip(),
-        # Color jitter on data.
         transforms.ColorJitter()
     ])
 
-    # Transformation on driver images.
-    transform_driver = transforms.Compose([
-        transforms.ToTensor(),
-        # Normalize data into range(-1, 1)
-        transforms.Normalize([0.5], [0.5]),
-        # Randomly flip train data(left and right).
-        transforms.RandomHorizontalFlip(),
-        # Color jitter on data.
-        transforms.ColorJitter()
-    ])
+    # Initialize EMODataset
+    dataset = EMODataset(
+        use_gpu=use_cuda,
+        width=img_size,
+        height=img_size,
+        n_sample_frames=args.n_sample_frames,
+        sample_rate=args.sample_rate,
+        img_scale=(1.0, 1.0),
+        data_dir=args.data_dir,
+        video_dir=args.video_dir,
+        json_file=args.json_file,
+        stage='stage1-0-framesencoder',
+        transform=transform
+    )
 
-    # Define dataset loaders
-    source_set = dataset.SourceDataset(source_img_path, data_set_length, transform=transform_source)
-    driver_set = dataset.DriverDataset(driver_img_path, data_set_length, transform=transform_driver)
+    # Configuration and Hyperparameters
+    num_epochs = 10  # Example number of epochs
+    learning_rate = 1e-3  # Example learning rate
 
-    source_loader = DataLoader(source_set, batch_size=args.batch_size, shuffle=False)
-    driver_loader = DataLoader(driver_set, batch_size=args.batch_size, shuffle=False)
+    # Initialize DataLoader
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
 
-    # Original data to compute transformation matrix.
-    source_set_origin = dataset.SourceDataset(source_img_path, data_set_length, transform=None)
-    driver_set_origin = dataset.DriverDataset(driver_img_path, data_set_length, transform=None)
-
-    source_loader_origin = DataLoader(source_set_origin, batch_size=args.batch_size, shuffle=False)
-    driver_loader_origin = DataLoader(driver_set_origin, batch_size=args.batch_size, shuffle=False)
+    # Model, Criterion, Optimizer
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-    # Generate random pairs for calculating cos loss.
-    random.seed(0)
-    # [index_source, index_driver] = random.sample(range(0, 29999), 2)
-    index_source = 0
-    index_driver = 1
-    source_img_random = Image.open("./CelebA-HQ-img/" + str(index_source) + ".jpg")
-    driver_img_random = Image.open("./CelebA-HQ-img/" + str(index_driver) + ".jpg")
-    # Apply the same transformation on these two images.
-    source_img_random = transform_source(source_img_random)
-    driver_img_random = transform_driver(driver_img_random)
 
     Eapp1 = model.Eapp1().to(device)
     # Eapp2 = model.Eapp2().to(device)
@@ -366,7 +349,7 @@ def main():
         scheduler = CosineAnnealingLR(optimizers[0], T_max=args.iteration, eta_min=1e-6)
         schedulers.append(scheduler)
 
-    train(args, models, device, driver_loader, source_loader, optimizers, schedulers, source_img_random, driver_img_random,source_loader_origin, driver_loader_origin)
+    train(args, models, device,  optimizers, schedulers,data_loader )
 
     
 
