@@ -14,7 +14,7 @@ from typing import List, Tuple, Dict, Any
 from decord import VideoReader,AVReader
 
 class EMODataset(Dataset):
-    def __init__(self, use_gpu:False,data_dir: str, sample_rate: int, n_sample_frames: int, width: int, height: int, img_scale: Tuple[float, float], img_ratio: Tuple[float, float] = (0.9, 1.0), video_dir: str = ".", drop_ratio: float = 0.1, json_file: str = "", stage: str = 'stage1', transform: transforms.Compose = None):
+    def __init__(self, use_gpu:False, sample_rate: int, n_sample_frames: int, width: int, height: int, img_scale: Tuple[float, float], img_ratio: Tuple[float, float] = (0.9, 1.0), video_dir: str = ".", drop_ratio: float = 0.1, json_file: str = "", stage: str = 'stage1', transform: transforms.Compose = None):
         self.sample_rate = sample_rate
         self.n_sample_frames = n_sample_frames
         self.width = width
@@ -22,7 +22,6 @@ class EMODataset(Dataset):
         self.img_scale = img_scale
         self.img_ratio = img_ratio
         self.video_dir = video_dir
-        self.data_dir = data_dir
         self.transform = transform
         self.stage = stage
         # self.feature_extractor = Wav2VecFeatureExtractor(model_name='facebook/wav2vec2-base-960h', device='cuda')

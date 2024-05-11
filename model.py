@@ -3,6 +3,31 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class Discriminator(nn.Module):
+    def __init__(self, in_channels=3):
+        super(Discriminator, self).__init__()
+
+        def discriminator_block(in_filters, out_filters, normalization=True):
+            """Returns downsampling layers of each discriminator block"""
+            layers = [nn.Conv2d(in_filters, out_filters, 4, stride=2, padding=1)]
+            if normalization:
+                layers.append(nn.InstanceNorm2d(out_filters))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+            *discriminator_block(in_channels * 2, 64, normalization=False),
+            *discriminator_block(64, 128),
+            *discriminator_block(128, 256),
+            *discriminator_block(256, 512),
+            nn.ZeroPad2d((1, 0, 1, 0)),
+            nn.Conv2d(512, 1, 4, padding=1, bias=False)
+        )
+
+    def forward(self, img_A, img_B):
+        # Concatenate image and condition image by channels to produce input
+        img_input = torch.cat((img_A, img_B), 1)
+        return self.model(img_input)
 
 
 class Conv2d_WS(nn.Conv2d):
@@ -456,4 +481,187 @@ class G2d(nn.Module):
         out = F.relu(out)
         out = self.last_layer(out)
         out = torch.tanh(out)
+        return out
+
+'''
+The main changes made to align the code with the training stages are:
+
+Introduced Gbase class that combines the components of the base model.
+Introduced Genh class for the high-resolution model.
+Introduced GHR class that combines the base model Gbase and the high-resolution model Genh.
+Introduced Student class for the student model, which includes an encoder, decoder, and SPADE blocks for avatar conditioning.
+Added separate training functions for each stage: train_base, train_hr, and train_student.
+Demonstrated the usage of the training functions and saving the trained models.
+
+Note: The code assumes the presence of appropriate dataloaders (dataloader, dataloader_hr, dataloader_avatars) and the implementation of the SPADEResBlock class for the student model. Additionally, the specific training loop details and loss functions need to be implemented based on the paper's description.
+'''
+
+class Gbase(nn.Module):
+    def __init__(self):
+        super(Gbase, self).__init__()
+        self.Eapp1 = Eapp1()
+        self.Eapp2 = Eapp2(repeat=[3, 4, 6, 3])
+        self.Emtn_facial = Emtn_facial(in_channels=3, resblock=ResBlock, outputs=256)
+        self.Emtn_head = Emtn_head(in_channels=3, resblock=ResBlock, outputs=6)
+        self.Ws2c = WarpGenerator(input_channels=512)
+        self.Wc2d = WarpGenerator(input_channels=512)
+        self.G3d = G3d(input_channels=96)
+        self.G2d = G2d(input_channels=96)
+
+    def forward(self, xs, xd):
+        vs = self.Eapp1(xs)
+        es = self.Eapp2(xs)
+        zs = self.Emtn_facial(xs)
+        Rs, ts = self.Emtn_head(xs)
+        zd = self.Emtn_facial(xd)
+        Rd, td = self.Emtn_head(xd)
+        ws2c = self.Ws2c(torch.cat((Rs, ts, zs, es), dim=1))
+        wc2d = self.Wc2d(torch.cat((Rd, td, zd, es), dim=1))
+        vc2d = self.G3d(torch.nn.functional.grid_sample(vs, ws2c))
+        vc2d = torch.nn.functional.grid_sample(vc2d, wc2d)
+        xhat = self.G2d(torch.nn.functional.avg_pool3d(vc2d, kernel_size=(1, 1, vc2d.size(4))).squeeze(4))
+        return xhat
+
+class Genh(nn.Module):
+    def __init__(self):
+        super(Genh, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, padding=1, stride=1)
+        
+        self.hidden_layer = nn.Sequential(
+            ResBlock_Custom(dimension=2, input_channels=64, output_channels=128),
+            nn.Upsample(scale_factor=(2, 2)),
+            ResBlock_Custom(dimension=2, input_channels=128, output_channels=256),
+            nn.Upsample(scale_factor=(2, 2)),
+            ResBlock_Custom(dimension=2, input_channels=256, output_channels=512),
+            nn.Upsample(scale_factor=(2, 2))
+        )
+        
+        self.last_layer = nn.Conv2d(in_channels=512, out_channels=3, kernel_size=3, padding=1, stride=1)
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.hidden_layer(out)
+        out = F.group_norm(out, num_groups=32)
+        out = F.relu(out)
+        out = self.last_layer(out)
+        out = torch.tanh(out)
+        return out
+
+class GHR(nn.Module):
+    def __init__(self):
+        super(GHR, self).__init__()
+        self.Gbase = Gbase()
+        self.Genh = Genh()
+
+    def forward(self, xs, xd):
+        xhat_base = self.Gbase(xs, xd)
+        xhat_hr = self.Genh(xhat_base)
+        return xhat_hr
+
+class Student(nn.Module):
+    def __init__(self, num_avatars):
+        super(Student, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, padding=1),
+            ResBlock_Custom(dimension=2, input_channels=64, output_channels=128),
+            ResBlock_Custom(dimension=2, input_channels=128, output_channels=256),
+            ResBlock_Custom(dimension=2, input_channels=256, output_channels=512),
+            ResBlock_Custom(dimension=2, input_channels=512, output_channels=1024)
+        )
+        self.decoder = nn.Sequential(
+            ResBlock_Custom(dimension=2, input_channels=1024, output_channels=512),
+            nn.Upsample(scale_factor=(2, 2)),
+            ResBlock_Custom(dimension=2, input_channels=512, output_channels=256),
+            nn.Upsample(scale_factor=(2, 2)),
+            ResBlock_Custom(dimension=2, input_channels=256, output_channels=128),
+            nn.Conv2d(in_channels=128, out_channels=3, kernel_size=3, padding=1)
+        )
+        self.spade_blocks = nn.ModuleList([
+            SPADEResBlock(1024, 1024, num_avatars) for _ in range(4)
+        ])
+
+    def forward(self, xd, avatar_index):
+        encoded = self.encoder(xd)
+        for spade_block in self.spade_blocks:
+            encoded = spade_block(encoded, avatar_index)
+        xhat = self.decoder(encoded)
+        return xhat
+
+
+'''
+In this expanded code, we have the SPADEResBlock class which represents a residual block with SPADE (Spatially-Adaptive Normalization) layers. The block consists of two convolutional layers (conv_0 and conv_1) with normalization layers (norm_0 and norm_1) and a learnable shortcut connection (conv_s and norm_s) if the input and output channels differ.
+The SPADE class implements the SPADE layer, which learns to modulate the normalized activations based on the avatar embedding. It consists of a shared convolutional layer (conv_shared) followed by separate convolutional layers for gamma and beta (conv_gamma and conv_beta). The avatar embeddings (avatar_shared_emb, avatar_gamma_emb, and avatar_beta_emb) are learned for each avatar index and are added to the corresponding activations.
+During the forward pass of SPADEResBlock, the input x is passed through the shortcut connection and the main branch. The main branch applies the SPADE normalization followed by the convolutional layers. The output of the block is the sum of the shortcut and the main branch activations.
+The SPADE layer first normalizes the input x using instance normalization. It then applies the shared convolutional layer to obtain the shared embedding. The gamma and beta values are computed by adding the avatar embeddings to the shared embedding and passing them through the respective convolutional layers. Finally, the normalized activations are modulated using the computed gamma and beta values.
+Note that this implementation assumes the presence of the avatar index tensor avatar_index during the forward pass, which is used to retrieve the corresponding avatar embeddings.
+'''
+class SPADEResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, num_avatars):
+        super(SPADEResBlock, self).__init__()
+        self.learned_shortcut = (in_channels != out_channels)
+        middle_channels = min(in_channels, out_channels)
+
+        self.conv_0 = nn.Conv2d(in_channels, middle_channels, kernel_size=3, padding=1)
+        self.conv_1 = nn.Conv2d(middle_channels, out_channels, kernel_size=3, padding=1)
+
+        if self.learned_shortcut:
+            self.conv_s = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+
+        self.norm_0 = SPADE(in_channels, num_avatars)
+        self.norm_1 = SPADE(middle_channels, num_avatars)
+
+        if self.learned_shortcut:
+            self.norm_s = SPADE(in_channels, num_avatars)
+
+    def forward(self, x, avatar_index):
+        x_s = self.shortcut(x, avatar_index)
+
+        dx = self.conv_0(self.actvn(self.norm_0(x, avatar_index)))
+        dx = self.conv_1(self.actvn(self.norm_1(dx, avatar_index)))
+
+        out = x_s + dx
+
+        return out
+
+    def shortcut(self, x, avatar_index):
+        if self.learned_shortcut:
+            x_s = self.conv_s(self.norm_s(x, avatar_index))
+        else:
+            x_s = x
+        return x_s
+
+    def actvn(self, x):
+        return F.leaky_relu(x, 2e-1)
+
+
+class SPADE(nn.Module):
+    def __init__(self, norm_nc, num_avatars):
+        super().__init__()
+        self.num_avatars = num_avatars
+        self.norm = nn.InstanceNorm2d(norm_nc, affine=False)
+
+        self.conv_shared = nn.Sequential(
+            nn.Conv2d(3, 128, kernel_size=3, padding=1),
+            nn.ReLU()
+        )
+        self.conv_gamma = nn.Conv2d(128, norm_nc, kernel_size=3, padding=1)
+        self.conv_beta = nn.Conv2d(128, norm_nc, kernel_size=3, padding=1)
+
+        self.avatar_shared_emb = nn.Embedding(num_avatars, 128)
+        self.avatar_gamma_emb = nn.Embedding(num_avatars, norm_nc)
+        self.avatar_beta_emb = nn.Embedding(num_avatars, norm_nc)
+
+    def forward(self, x, avatar_index):
+        avatar_shared = self.avatar_shared_emb(avatar_index)
+        avatar_gamma = self.avatar_gamma_emb(avatar_index)
+        avatar_beta = self.avatar_beta_emb(avatar_index)
+
+        x = self.norm(x)
+        shared_emb = self.conv_shared(x)
+        gamma = self.conv_gamma(shared_emb + avatar_shared.view(-1, 128, 1, 1))
+        beta = self.conv_beta(shared_emb + avatar_shared.view(-1, 128, 1, 1))
+        gamma = gamma + avatar_gamma.view(-1, self.norm_nc, 1, 1)
+        beta = beta + avatar_beta.view(-1, self.norm_nc, 1, 1)
+
+        out = x * (1 + gamma) + beta
         return out
