@@ -20,17 +20,6 @@ from model import GazeLoss,Encoder
 
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda" if use_cuda else "cpu")
-img_size = 512
-
-hinge_loss = nn.HingeEmbeddingLoss(reduction='mean')
-L1_loss = nn.L1Loss(reduction='mean')
-feature_matching_loss = nn.MSELoss()
-cosine_dist = nn.CosineSimilarity()
-
-patch = (1, img_size // 2 ** 4, img_size // 2 ** 4)
-
-
-
 
 
 '''
