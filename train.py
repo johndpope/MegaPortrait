@@ -262,7 +262,7 @@ def main(cfg: OmegaConf) -> None:
     
     Gbase = model.Gbase()
     Dbase = model.Discriminator()
-    train_base(cfg, Gbase, Dbase, dataloader, epochs=100)
+    train_base(cfg, Gbase, Dbase, dataloader)
     
     GHR = model.GHR()
     GHR.Gbase.load_state_dict(Gbase.state_dict())
