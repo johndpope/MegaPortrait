@@ -3,6 +3,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from resnet import ResNet,Bottleneck, resnet18
+from unet3d import ResBlock3D
+
+
+import torch
+import torch.nn as nn
+import torchvision.models as models
+
+
+
+
 class Discriminator(nn.Module):
     def __init__(self, in_channels=3):
         super(Discriminator, self).__init__()
@@ -204,6 +214,8 @@ class WarpGenerator(nn.Module):
         print("The final output shape is : " + str(out.size()))
 
         return out
+
+
 
 
 class G3d(nn.Module):
@@ -686,3 +698,80 @@ class SPADE(nn.Module):
 
         out = x * (1 + gamma) + beta
         return out
+
+
+'''
+
+Gaze Loss:
+
+The GazeLoss class computes the gaze loss between the output and target frames.
+It uses a pre-trained GazeModel to predict the gaze directions for both frames.
+The MSE loss is calculated between the predicted gaze directions.
+
+
+Gaze Model:
+
+The GazeModel class is based on the VGG16 architecture.
+It uses the pre-trained VGG16 model as the base and modifies the classifier to predict gaze directions.
+The classifier is modified to remove the last layer and add a fully connected layer that outputs a 2-dimensional gaze vector.
+
+
+Encoder Model:
+
+The Encoder class is a convolutional neural network that encodes the input frames into a lower-dimensional representation.
+It consists of a series of convolutional layers with increasing number of filters, followed by batch normalization and ReLU activation.
+The encoder performs downsampling at each stage to reduce the spatial dimensions.
+The final output is obtained by applying adaptive average pooling and a 1x1 convolutional layer to produce the desired output dimensionality.
+
+
+
+The GazeLoss can be used in the PerceptualLoss class to compute the gaze loss component. The Encoder model can be used in the contrastive_loss function to encode the frames into lower-dimensional representations for computing the cosine similarity.
+'''
+# Gaze Loss
+class GazeLoss(nn.Module):
+    def __init__(self):
+        super(GazeLoss, self).__init__()
+        self.gaze_model = GazeModel()
+        self.loss_fn = nn.MSELoss()
+    
+    def forward(self, output_frame, target_frame):
+        output_gaze = self.gaze_model(output_frame)
+        target_gaze = self.gaze_model(target_frame)
+        loss = self.loss_fn(output_gaze, target_gaze)
+        return loss
+
+# Gaze Model
+class GazeModel(nn.Module):
+    def __init__(self):
+        super(GazeModel, self).__init__()
+        self.base_model = models.vgg16(pretrained=True)
+        self.base_model.classifier = nn.Sequential(*list(self.base_model.classifier.children())[:-1])
+        self.gaze_fc = nn.Linear(4096, 2)
+    
+    def forward(self, x):
+        features = self.base_model(x)
+        gaze = self.gaze_fc(features)
+        return gaze
+
+# Encoder Model
+class Encoder(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=64, n_downsampling=4, norm_layer=nn.BatchNorm2d):
+        super(Encoder, self).__init__()
+        model = [nn.ReflectionPad2d(3),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0),
+                 norm_layer(ngf),
+                 nn.ReLU(True)]
+
+        for i in range(n_downsampling):
+            mult = 2 ** i
+            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1),
+                      norm_layer(ngf * mult * 2),
+                      nn.ReLU(True)]
+
+        model += [nn.AdaptiveAvgPool2d((1, 1)),
+                  nn.Conv2d(ngf * (2 ** n_downsampling), output_nc, kernel_size=1)]
+
+        self.model = nn.Sequential(*model)
+
+    def forward(self, x):
+        return self.model(x)
