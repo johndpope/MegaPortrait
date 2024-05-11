@@ -59,11 +59,11 @@ def warp_3d(x, theta):
   
   return warped_x
 
-def train_base(cfg, Gbase, Dbase, dataloader, epochs):
+def train_base(cfg, Gbase, Dbase, dataloader):
     Gbase.train()
     Dbase.train()
     
-    for epoch in range(epochs):
+    for epoch in range(cfg.training.base_epochs):
         for batch in dataloader:
             video_frames = batch['images']
             video_id = batch['video_id']
@@ -130,10 +130,10 @@ def main(cfg: OmegaConf) -> None:
     GHR = model.GHR()
     GHR.Gbase.load_state_dict(Gbase.state_dict())
     Dhr = model.Discriminator()
-    train_hr(cfg, GHR, Dhr, dataloader, epochs=50)
+    train_hr(cfg, GHR, Dhr, dataloader)
     
-    Student = model.Student(num_avatars=100)
-    train_student(cfg, Student, GHR, dataloader, epochs=100)
+    Student = model.Student(num_avatars=100) # this should equal the number of celebs in dataset
+    train_student(cfg, Student, GHR, dataloader)
     
     torch.save(Gbase.state_dict(), 'Gbase.pth')
     torch.save(GHR.state_dict(), 'GHR.pth')
